@@ -1,0 +1,233 @@
+---
+title: "MNW"
+author: "Rafa³ Gazda"
+date: "19 grudnia 2018"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F)
+```
+Prace nad zadaniem zostan¹ rozpocz¹czête od wgrania odpowiednich bibliotek, które bêd¹ wykorzystywane w dalszej czêsci projektu, a tak¿e za³adowanie danych z zewnêtrznego pliku _DaneZ4.csv_.
+
+```{r, echo=F, error=F, message=F, warning=F}
+library(ggplot2)
+library(lmtest)
+library(e1071) 
+library(randtests)
+library(caTools)
+library(strucchange)
+library(tidyr)
+library(bbmle)
+library(dplyr)
+library(car)
+```
+Celem projektu jest wyestymowanie modelu za pomoc¹ MNW, czyli metody najwiêkszej wiarygodnoœci. 
+Wgrany zbiór zawiera 3 zmienne _y_, _x_, _x2_. 
+Po wgraniu danych, które posiadaj¹ 1000 obserwacji muszê podzieliæ je w sposób losowy na dwie czêœci - próbkê zawieraj¹c¹ 750 obserwacji, która wykorzystana zostanie do wyestymowania parametrów modelu (oznaczona u mnie jako _train_), a tak¿e podzbiór testowy zawieraj¹cy 250 obserwacji (oznaczony u mnie jako _test_). Zgodnie z poleceniem do ustawienia ziarna wykorzystuje swój numer indeksu.
+
+```{r}
+set.seed(284095)
+MyData = read.csv("C:/Users/Gazi/Desktop/Projekt 4 - R-studio/DaneZ4.csv", sep = ";", dec = ",") 
+```
+#1
+Dane zosta³y podzielone na dwie grupy: piersz¹ 750-elementow¹, która jest zbiorem ucz¹cym oraz na 250-elementow¹, która jest zbiorem testowym. Dla pierwszego zbioru policzono podstawowe statystyki.
+```{r}
+sample = sample(1:1000, 250, replace=FALSE)
+sample
+train = MyData[-sample,]
+test = MyData[sample,]
+
+res <-  lapply( train , function(x) rbind( mean = mean(x) ,
+                                           sd = sd(x) ,
+                                           median = median(x) ,
+                                           minimum = min(x) ,
+                                           maximum = max(x) ,
+                                           kurtosis = kurtosis(x),
+                                           skewness = skewness(x),
+                                           coeff = sd(x)/mean(x) * 100
+))
+
+data.frame(res)
+
+trainY = train$y
+trainX1 = train$x
+trainX2 = train$x2
+
+par(mfrow=c(1,2))
+
+```
+Natêpnie dla ka¿dej zmiennej zosta³ stworzony wykres pude³kowy i histogram, bêdzie on s³u¿y³ do wizualnego sprawdzenia, czy dana zmienna ma rozk³ad normalny
+W przypadku tych danych wszystkie zmienne maj¹ rozk³ad zbli¿ony do normalnego. Jednak jest to jedynie obserwacja wykresu, problem normalnoœci zostanie dok³adniej zbadany w dalszej czêœci projektu za pomoc¹ testu Shapiro-Wilka i zostanie zbadana tylko zmienna _y_, poniewa¿ ta zmienna jest zmienn¹ objaœnian¹. W przypadku gdy zmienna _y_ nie mia³aby rozk³adu normalnego skutkowa³oby to brakiem normalnoœci rozk³adu reszt, co ³ama³oby za³o¿enia MNK.
+```{r}
+# Charts for Y
+boxplot(trainY, main = "Podstawowe staystyki dla zmiennej Y", cex.main=0.6)
+h <- hist(trainY,
+          main="Histogram dla zmiennej y",
+          xlab="Passengers",
+          border="blue",
+          col="green",
+          breaks=20,
+          las=1,
+          cex.main=0.6)
+
+xfit <- seq(min(trainY), max(trainY), length = 40)
+yfit <- dnorm(xfit, mean = mean(trainY), sd = sd(trainY))
+yfit <- yfit * diff(h$mids[1:2]) * length(trainY)
+
+lines(xfit, yfit, col = "black", lwd = 2)
+
+# Charts for X1
+boxplot(trainX1, main = "Podstawowe staystyki dla zmiennej X1", cex.main=0.6)
+h <- hist(trainY,
+          main="Histogram dla zmiennej X1",
+          xlab="Passengers",
+          border="blue",
+          col="green",
+          breaks=20,
+          las=1,
+          cex.main=0.6)
+
+xfit <- seq(min(trainX1), max(trainX1), length = 40)
+yfit <- dnorm(xfit, mean = mean(trainX1), sd = sd(trainX1))
+yfit <- yfit * diff(h$mids[1:2]) * length(trainX1)
+lines(xfit, yfit, col = "black", lwd = 2)
+
+# Charts for X2
+boxplot(trainX2, main = "Podstawowe staystyki dla zmiennej X2", cex.main=0.6)
+h <- hist(trainX2,
+          main="Histogram dla zmiennej X2",
+          xlab="Passengers",
+          border="blue",
+          col="green",
+          breaks=20,
+          las=1,
+          cex.main=0.6)
+xfit <- seq(min(trainX2), max(trainX2), length = 40)
+yfit <- dnorm(xfit, mean = mean(trainX2), sd = sd(trainX2))
+yfit <- yfit * diff(h$mids[1:2]) * length(trainX2)
+lines(xfit, yfit, col = "black", lwd = 2)
+```
+  
+#2
+Nastêpnie zostanie obliczona korelacja pomiêdzy zmiennymi. Macierz korelacji pokazuje, ¿e zmienna _y_ jest doœæ dobrze skorelowana ze zmienn¹ _x_, natomiast s³abo ze zmienn¹ _x2_. Korelacja pomiêdzy zmiennymi objaœniaj¹cymi jest bliska zeru.
+```{r}
+cor(train)
+```
+Sprawdzono jeszcze czy bêdzie widaæ jak¹œ zale¿noœæ na wykresach zale¿noœci i wykrasach zale¿noœci gdy zmienna _y_ bêdzie zlogarytmowana.  
+Okaza³o siê, ¿e widaæ zale¿noœæ pomiêdzy _y_ a _x_, ale pomiêdzy _y_ a _x2_ ju¿ nie, co zgadza siê z macierz¹ korelacji. Po zlogarytmowaniu zmiennej objaœnianej na pierwszym wykresie mo¿na dostrze dawn¹ zale¿noœæ liniow¹, ale nie wygl¹da ona tak dobrze jak wczeœniej.
+```{r}
+ggplot(train, aes(x = x, y = y)) +
+  geom_point() +
+  stat_smooth(method = "lm", col = "red")
+
+ggplot(train, aes(x = x2, y = y)) +
+  geom_point() +
+  stat_smooth(method = "lm", col = "red")
+
+ggplot(train, aes(x = x, y = y)) +
+  geom_point() +
+  stat_smooth(method = "lm", col = "red", formula=y~log(x))
+
+ggplot(train, aes(x = x2, y = y)) +
+  geom_point() +
+  stat_smooth(method = "lm", col = "red", formula=y~log(x))
+```
+  
+#3
+Nastêpnie zosta³ wykonany model MNK oraz testy sprawdzaj¹ce jego za³o¿enia.
+Najpierw zosta³a sprawdzona normalnoœæ roz³adu reszt. P-value jest równe oko³o 0.09 i jest wiêksze od 0.05, wiêc nie mo¿emy odrzuciæ hipotezy H0 mówi¹cej o normalnoœci rozk³adu. Kolejnym testem bêdzie test na homoskedastycznoœæ macierzy kowariancji sk³adnika losowego. P-value jest równe oko³o 0.09, co oznacza, ¿e nie ma podstaw do odrzucenia H0. Nastêpnie zosta³a sprawdzona autokorelacja sk³adnika losowego. P-value wynosi oko³o 0.6, wiêc nie mo¿emy odrzuciæ H0.
+Poniewa¿ w teœcie Durbina_Watsona, nie zosta³a odrzucona hipoteza autokorelacji sk³adnika losowego, wiêc nie mo¿emy zastosowaæ modelu MNK do estymacji tego modelu. Z tego powodu zastosujemy metodê najwiêkszej wiarygodnoœci.
+```{r}
+modelMNK = lm(train)
+shapiro.test(modelMNK$residuals) 
+gqtest(modelMNK)
+dwtest(modelMNK) 
+```
+
+#4
+W tym punkcie wykorzystywana wspomniana MNW. Dodtkowo zmienna objaœniana jest logarytmowana, wiêc model ma postaæ:
+$$ln\left(y\right)=\alpha+\beta_1*x+\beta_2*x_2$$
+
+,a nastêpnie jest ona maksymalizowana. Aby u³atwiæ zadanie obie strony s¹ logarytmowane, co zmienia mno¿enie w dodawanie. Mo¿na to zapisaæ jako:
+$$L\left(\theta\right)=ln\left(c\right)+\sum_{i=1}^{n}ln\left(f_{\theta}\left(x_{i}\right)\right)$$
+Do wykonania podanego zadania zosta³a u¿yta funkcja mle2, która jest podobna do bazowej funkcji mle. Jako argumenty nale¿y podaæ:  
+1. Funkcjê przyjmuj¹c¹ estymowane parametry jako argumenty i zwracaj¹c¹ odwrotn¹ wiarygodnoœæ.  
+2. Pocz¹tkow¹ wartoœæ estymowanych parametrów (tutaj wartoœci z MNK).  
+3. Opcjonalnie sta³e wartoœci parametrów.  
+Wyestymowane przy pomocy MNW parametry s¹ podobne do tych z MNK. Jak widaæ w tym wypadku zmienna _x2_ te¿ nie wydaje siê istotna.
+```{r}
+ml = function(theta0, theta1, theta2)
+{
+  mu = exp(theta0 + theta1 * train$x + theta2 * train$x2)
+  -sum(train$y*(log(mu)) - mu)
+}
+
+coeff = modelMNK$coefficients
+names(coeff) = c("theta0", "theta1", "theta2")
+as.list(coeff)
+modelMNW = mle2(ml,  start = list(theta0 = coeff[1], theta1 = coeff[2], theta2 = 0))
+summary(modelMNW)
+```
+#5
+W tym kroku zostanie sprawdzony model bez niektórych parametrów za pomoc¹ kryterium informacyjnego Akaikiego.
+Na podstawie tego parametru zostanie wybrany odpowiedni model.
+```{r}
+ml2 = function(theta0, theta1)
+{
+  mu = exp(theta0 + theta1 * train$x)
+  -sum(train$y*(log(mu)) - mu)
+}
+
+modelMNW2 = mle2(ml2, start = list(theta0 = coeff[1], theta1 = coeff[2]))
+modelMNW3 = mle2(ml2, start = list(theta0 = coeff[1], theta1 = coeff[3]))
+
+AIC(modelMNW)
+AIC(modelMNW2)    
+AIC(modelMNW3)                                      
+```
+AIC modelu bez zmiennej _x_ jest równy, modelowi bez zmiennej _x2_, co wiêcej wartoœæ modelu z wszystkimi zmiennymi nie ró¿ni siê du¿o od modelów bez z nich. Z tych powodów nie bêdê przekszta³caæ modelu . Oba parametry s¹ bardzo istotne.
+
+Przedzia³y ufnoœci dla 95%:
+```{r}
+  confint(modelMNW)
+```
+#6
+W tym kroku zostanie sprawdzona losowoœæ próbki za pomoc¹ testu serii Walda-Wolfowitza. 
+P-value wynosi 0.408, co oznacza ¿e nie ma podstaw do odrzucenia hipotezy zerowej, czyli próbka zosta³a wybrana losowo.
+```{r}
+  runs.test(as.numeric(trainY))
+```
+#7
+Teraz mo¿na ju¿ dokonaæ prognozy EX POST dla zbioru tstowego i obliczyæ ró¿nego rodzaju b³êdy predykcji.
+```{r}
+predicted = exp(
+  coef(modelMNW)[1] +
+    coef(modelMNW)[2] * test$x +
+    coef(modelMNW)[3] * test$x2)
+testing.errors = test$y - predicted
+```
+Œredni b³¹d predykcji mówi o tym w jak¹ stronê czêœciej przewidywano wyniki predykcji (czy by³y za niskie, czy za wysokie).
+```{r}
+mean(testing.errors)
+```
+Œredni absolutny b³¹d predykcji pokazuje œrednio jak bardzo wratoœci przewidziane odstawa³y od rzeczywistych.
+```{r}
+mean(abs(testing.errors))
+```
+B³¹d œrednikwadratowy bardziej akcentuje odchylenia wiêksze ni¿ jeden, co czyni b³¹d bardziej wra¿liwym na wartoœci odstaj¹ce. Jego pierwiastek jest lepiej porównywalny z wczeœnijszymi b³êdami.
+```{r}
+mean(testing.errors^2)
+sqrt(mean(testing.errors^2))
+```
+Œredni absolutny wzglêdny b³¹d najlepiej pokazuje b³¹d w wypadku gdy chcemy go porównaæ z b³êdami innych predykcji zmiennych z innej skali. W tym wypadku nie dostano ¿adnej konkretnej wartoœci, gdy¿ prognozowana zmienna zawiera zera.
+```{r}
+mean(abs(testing.errors / test$y))
+```
+#8
+Elastycznoœæ jest równa:
+
+```{r}
+coef(modelMNW)[2]
+coef(modelMNW)[3]
+```
+Oznacza to, ¿e zmiana zmiennej _x_ o 1% spowoduje zmianê _y_ o 0.09%, a zmiana _x2_ o 1% spowoduje zmiane o -0.0004%.
